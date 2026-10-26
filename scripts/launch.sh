@@ -78,7 +78,10 @@ GAME_DIR="$(cd "$(dirname "$EXE")" && pwd)"
 cd "$GAME_DIR"
 echo "Starting $(basename "$EXE") (Steam app $APP_ID). Bridge log: /tmp/steambridge.log"
 set +e
-DEBUG=()
-[[ -n "${CROSSSTEAM_DEBUG:-}" ]] && DEBUG=(--debugmsg err+all,seh)
-"$WINE" --bottle "$BOTTLE" --dll steamclient64=b "${DEBUG[@]}" "$EXE" >"$LOG" 2>&1
+# macOS bash 3.2 treats "${array[@]}" as unbound when the array is empty and set -u is on.
+if [[ -n "${CROSSSTEAM_DEBUG:-}" ]]; then
+    "$WINE" --bottle "$BOTTLE" --dll steamclient64=b --debugmsg err+all,seh "$EXE" >"$LOG" 2>&1
+else
+    "$WINE" --bottle "$BOTTLE" --dll steamclient64=b "$EXE" >"$LOG" 2>&1
+fi
 echo "$(basename "$EXE") exited $?"
