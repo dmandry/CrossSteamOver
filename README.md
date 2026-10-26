@@ -78,14 +78,10 @@ in the bottle after changing it so Wine reloads the setting.
 Mac Steam's own library download is the macOS build. `steamcmd` can pull the Windows
 depots of an app you own into a folder inside the bottle.
 
-Install steamcmd once:
+Install steamcmd once. It is a Homebrew cask, and the command it adds is `steamcmd`:
 
 ```bash
-mkdir -p "$HOME/steamcmd"
-cd "$HOME/steamcmd"
-curl -fsSL -o steamcmd_osx.tar.gz \
-  "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
-tar -xzf steamcmd_osx.tar.gz
+brew install --cask steamcmd
 ```
 
 Download a Windows app straight into the bottle. `3280350` is Death Stranding 2; use
@@ -97,7 +93,7 @@ BOTTLE="$HOME/Library/Application Support/CrossOver/Bottles/MyBottle"
 INSTALL="$BOTTLE/drive_c/Games/3280350"
 mkdir -p "$INSTALL"
 
-"$HOME/steamcmd/steamcmd.sh" \
+steamcmd \
   +@sSteamCmdForcePlatformType windows \
   +force_install_dir "$INSTALL" \
   +login "$STEAM_USER" \
