@@ -28,7 +28,7 @@ the bottle.
 ## Build
 
 ```bash
-git clone https://github.com/<you>/CrossSteamOver.git
+git clone https://github.com/dmandry/CrossSteamOver.git
 cd CrossSteamOver
 make
 ```
