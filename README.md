@@ -152,6 +152,30 @@ A quick check that the Mac client answers, without starting the game:
 Then read `/tmp/steambridge.log`. `CreateInterface(SteamClient020)` should be a
 non-null pointer.
 
+## Desktop icon
+
+`scripts/desktop-icon.sh` builds a double-clickable Mac app and puts it on the
+Desktop. The picture is the icon stored in the exe. Double-clicking runs
+`scripts/launch.sh` with the bottle, exe, and app id saved into the app, so the
+icon keeps working if you move it. Mac Steam still has to be open. If the start
+fails, a dialog shows the last lines of the error.
+
+```bash
+scripts/desktop-icon.sh \
+  --bottle "MyBottle" \
+  --appid 3280350 \
+  --name "Death Stranding 2" \
+  --exe "$HOME/Library/Application Support/CrossOver/Bottles/MyBottle/drive_c/Games/3280350/Game.exe"
+```
+
+That writes `~/Desktop/Death Stranding 2.app`. `--output` chooses a different
+place, and `--icon some.png` uses that picture instead of the one in the exe.
+Running the command again replaces an app this script created. It will not
+overwrite a different app of the same name.
+
+The first time macOS asks, choose Open. The icon stays in the Dock while the
+game is running and leaves when the game exits.
+
 ## DualSense
 
 With the controller hidden from Wine, buttons, sticks, and both triggers come from
