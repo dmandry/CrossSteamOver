@@ -1,0 +1,13 @@
+Windows Registry Editor Version 5.00
+
+; Keep the DualSense out of Wine. Its Bluetooth report is parsed with the
+; wrong buttons and a dead right trigger. Mac Steam Input owns the pad.
+; Safe to import into a bottle that only plays with this bridge.
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\WineBus]
+"Enable SDL"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\WineBus\Devices\054c/0ce6]
+"Hidraw"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\WineBus\Devices\054c/0df2]
+"Hidraw"=dword:00000000
