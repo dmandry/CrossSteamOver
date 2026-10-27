@@ -36,32 +36,32 @@ static uint32_t crc32_step(uint32_t crc, const uint8_t *p, size_t n) {
     return ~crc;
 }
 
-/* The 11-byte trigger block packs ten zones into bitfields. Writing the
- * SCE bytes straight through treats a frequency as a zone mask, and the
- * trigger motor then runs flat out. */
+/* Steam's encoder (steamclient, arm64 0x7bb564) writes the mode at byte 1 of
+ * each 11-byte block. Byte 0 stays 0. Zones follow at bytes 2-3, then six
+ * bytes of 3-bit strengths, and a vibration frequency at byte 10. */
 static uint8_t clamp8(uint8_t v, uint8_t max) { return v > max ? max : v; }
 
-static void write_effect(uint8_t out[11], uint8_t mode, uint8_t p0, uint8_t p1, uint8_t p2,
-                         uint8_t p3, uint8_t p4, uint8_t p5, uint8_t p6, uint8_t p7, uint8_t p8) {
+static void trigger_off(uint8_t out[11]) {
     memset(out, 0, 11);
-    out[0] = mode;
-    out[1] = p0; out[2] = p1; out[3] = p2; out[4] = p3; out[5] = p4;
-    out[6] = p5; out[7] = p6; out[8] = p7; out[9] = p8;
+    out[1] = 0x05;
 }
 
 static void pack_strengths(uint8_t out[11], uint8_t mode, const uint8_t strength[10], uint8_t frequency) {
-    uint32_t zones = 0;
+    uint64_t packed = 0;
     uint16_t active = 0;
     for (int i = 0; i < 10; i++) {
         uint8_t s = strength[i];
         if (s > 8) s = 8;
         if (s == 0) continue;
-        zones |= (uint32_t)((s - 1) & 7) << (3 * i);
+        packed |= (uint64_t)((s - 1) & 7) << (3 * i);
         active |= (uint16_t)1 << i;
     }
-    write_effect(out, mode, (uint8_t)active, (uint8_t)(active >> 8),
-                 (uint8_t)zones, (uint8_t)(zones >> 8), (uint8_t)(zones >> 16), (uint8_t)(zones >> 24),
-                 0, 0, frequency);
+    memset(out, 0, 11);
+    out[1] = active ? mode : 0x05;
+    out[2] = (uint8_t)active;
+    out[3] = (uint8_t)(active >> 8);
+    for (int i = 0; i < 6; i++) out[4 + i] = (uint8_t)(packed >> (8 * i));
+    out[10] = frequency;
 }
 
 static void effect_from_here(uint8_t out[11], uint8_t mode, uint8_t position, uint8_t strength, uint8_t frequency) {
@@ -70,8 +70,7 @@ static void effect_from_here(uint8_t out[11], uint8_t mode, uint8_t position, ui
     position = clamp8(position, 9);
     strength = clamp8(strength, 8);
     if (strength == 0) {
-        memset(out, 0, 11);
-        out[0] = 0x05;
+        trigger_off(out);
         return;
     }
     for (int i = position; i < 10; i++) s[i] = strength;
@@ -89,11 +88,14 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
     case 1: /* feedback: position, strength. Resistance from there to the end. */
         effect_from_here(out, 0x21, d[0], d[1], 0);
         break;
-    case 2: { /* weapon: start, end, strength */
+    case 2: { /* weapon: start, end, strength. Mode at byte 1, zones at 2, strength at 4. */
         uint8_t start = clamp8(d[0], 9), end = clamp8(d[1], 9), strength = clamp8(d[2], 8);
         uint16_t zones = (uint16_t)((1u << start) | (1u << end));
-        write_effect(out, 0x25, (uint8_t)zones, (uint8_t)(zones >> 8),
-                     strength ? (uint8_t)(strength - 1) : 0, 0, 0, 0, 0, 0, 0);
+        memset(out, 0, 11);
+        out[1] = 0x25;
+        out[2] = (uint8_t)zones;
+        out[3] = (uint8_t)(zones >> 8);
+        out[4] = strength ? (uint8_t)(strength - 1) : 0;
         break;
     }
     case 3: /* vibration: position, amplitude, frequency */
@@ -107,8 +109,13 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
         uint8_t start = clamp8(d[0], 9), end = clamp8(d[1], 9);
         uint8_t a = clamp8(d[2], 8), b = clamp8(d[3], 8);
         uint16_t zones = (uint16_t)((1u << start) | (1u << end));
-        uint8_t pair = (uint8_t)(((a ? a - 1 : 0) & 7) | (((b ? b - 1 : 0) & 7) << 3));
-        write_effect(out, 0x22, (uint8_t)zones, (uint8_t)(zones >> 8), pair, 0, 0, 0, 0, 0, 0);
+        uint8_t low = a ? (uint8_t)(a - 1) : 0;
+        uint8_t pair = (uint8_t)((((b << 3) + 0x38) & 0x38) | (low & 7));
+        memset(out, 0, 11);
+        out[1] = 0x22;
+        out[2] = (uint8_t)zones;
+        out[3] = (uint8_t)(zones >> 8);
+        out[4] = pair;
         break;
     }
     case 6: /* frequency, then ten amplitudes */
@@ -116,19 +123,23 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
         pack_strengths(out, 0x26, strengths, d[0]);
         break;
     default:
-        out[0] = 0x05;
+        trigger_off(out);
         break;
     }
 }
 
 static int motors_on(void) { return g_left || g_right; }
 
+static int trigger_programmed(const uint8_t fx[11]) { return fx[1] != 0; }
+
 static void fill_state(uint8_t state[47]) {
     memset(state, 0, 47);
-    /* 0x01|0x02 drive the grip motors. 0x04 and 0x08 drive the trigger
-     * motors, and only the packed effect bytes belong there. */
+    /* Grip motors use byte 0. Trigger enables are byte 1: 0x04 right, 0x08 left.
+     * Steam also sets byte 0 to 0x02 whenever a trigger block is sent. */
     if (motors_on()) state[0] |= 0x01 | 0x02;
-    state[0] |= 0x04 | 0x08;
+    if (trigger_programmed(g_rfx)) state[1] |= 0x04;
+    if (trigger_programmed(g_lfx)) state[1] |= 0x08;
+    if (state[1] & 0x0c) state[0] |= 0x02;
     state[2] = g_right;
     state[3] = g_left;
     memcpy(state + 10, g_rfx, 11);
@@ -254,7 +265,7 @@ static void ensure_thread(void) {
     g_started = 1;
     memset(g_lfx, 0, sizeof g_lfx);
     memset(g_rfx, 0, sizeof g_rfx);
-    g_lfx[0] = g_rfx[0] = 0x05;
+    g_lfx[1] = g_rfx[1] = 0x05;
     pthread_create(&g_thread, NULL, writer, NULL);
 }
 
