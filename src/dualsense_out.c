@@ -41,28 +41,88 @@ static int is_off(const uint8_t fx[11]) {
     return fx[0] == 0 || fx[0] == 0x05;
 }
 
-/* Sony's 11-byte trigger block. command points at the SCE command:
- * u32 mode, 4 bytes pad, then the mode's payload. */
+/* The 11-byte trigger block packs ten zones into bitfields. Writing the
+ * SCE bytes straight through treats a frequency as a zone mask, and the
+ * trigger motor then runs flat out. */
+static uint8_t clamp8(uint8_t v, uint8_t max) { return v > max ? max : v; }
+
+static void write_effect(uint8_t out[11], uint8_t mode, uint8_t p0, uint8_t p1, uint8_t p2,
+                         uint8_t p3, uint8_t p4, uint8_t p5, uint8_t p6, uint8_t p7, uint8_t p8) {
+    memset(out, 0, 11);
+    out[0] = mode;
+    out[1] = p0; out[2] = p1; out[3] = p2; out[4] = p3; out[5] = p4;
+    out[6] = p5; out[7] = p6; out[8] = p7; out[9] = p8;
+}
+
+static void pack_strengths(uint8_t out[11], uint8_t mode, const uint8_t strength[10], uint8_t frequency) {
+    uint32_t zones = 0;
+    uint16_t active = 0;
+    for (int i = 0; i < 10; i++) {
+        uint8_t s = strength[i];
+        if (s > 8) s = 8;
+        if (s == 0) continue;
+        zones |= (uint32_t)((s - 1) & 7) << (3 * i);
+        active |= (uint16_t)1 << i;
+    }
+    write_effect(out, mode, (uint8_t)active, (uint8_t)(active >> 8),
+                 (uint8_t)zones, (uint8_t)(zones >> 8), (uint8_t)(zones >> 16), (uint8_t)(zones >> 24),
+                 0, 0, frequency);
+}
+
+static void effect_from_here(uint8_t out[11], uint8_t mode, uint8_t position, uint8_t strength, uint8_t frequency) {
+    uint8_t s[10];
+    memset(s, 0, sizeof s);
+    position = clamp8(position, 9);
+    strength = clamp8(strength, 8);
+    if (strength == 0) {
+        memset(out, 0, 11);
+        out[0] = 0x05;
+        return;
+    }
+    for (int i = position; i < 10; i++) s[i] = strength;
+    pack_strengths(out, mode, s, frequency);
+}
+
+/* command points at the SCE command: u32 mode, 4 bytes pad, then the payload. */
 static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
     uint32_t mode = (uint32_t)command[0] | ((uint32_t)command[1] << 8) |
                     ((uint32_t)command[2] << 16) | ((uint32_t)command[3] << 24);
     const uint8_t *d = command + 8;
+    uint8_t strengths[10];
     memset(out, 0, 11);
     switch (mode) {
-    case 1: /* feedback: position, strength */
-        out[0] = 0x21; out[1] = d[0]; out[2] = d[1]; break;
-    case 2: /* weapon: start, end, strength */
-        out[0] = 0x25; out[1] = d[0]; out[2] = d[1]; out[3] = d[2]; break;
+    case 1: /* feedback: position, strength. Resistance from there to the end. */
+        effect_from_here(out, 0x21, d[0], d[1], 0);
+        break;
+    case 2: { /* weapon: start, end, strength */
+        uint8_t start = clamp8(d[0], 9), end = clamp8(d[1], 9), strength = clamp8(d[2], 8);
+        uint16_t zones = (uint16_t)((1u << start) | (1u << end));
+        write_effect(out, 0x25, (uint8_t)zones, (uint8_t)(zones >> 8),
+                     strength ? (uint8_t)(strength - 1) : 0, 0, 0, 0, 0, 0, 0);
+        break;
+    }
     case 3: /* vibration: position, amplitude, frequency */
-        out[0] = 0x26; out[1] = d[2]; out[2] = d[1]; out[3] = d[0]; break;
-    case 4: /* multi-position feedback: 10 strengths */
-        out[0] = 0x21; out[1] = d[0]; break;
-    case 5: /* slope feedback */
-        out[0] = 0x22; out[1] = d[0]; out[2] = d[1]; out[3] = d[2]; out[4] = d[3]; break;
-    case 6: /* multi-position vibration */
-        out[0] = 0x26; out[1] = d[0]; out[2] = d[1]; break;
+        effect_from_here(out, 0x26, d[0], d[1], d[2]);
+        break;
+    case 4: /* ten resistance points */
+        memcpy(strengths, d, 10);
+        pack_strengths(out, 0x21, strengths, 0);
+        break;
+    case 5: { /* slope: start, end, start strength, end strength */
+        uint8_t start = clamp8(d[0], 9), end = clamp8(d[1], 9);
+        uint8_t a = clamp8(d[2], 8), b = clamp8(d[3], 8);
+        uint16_t zones = (uint16_t)((1u << start) | (1u << end));
+        uint8_t pair = (uint8_t)(((a ? a - 1 : 0) & 7) | (((b ? b - 1 : 0) & 7) << 3));
+        write_effect(out, 0x22, (uint8_t)zones, (uint8_t)(zones >> 8), pair, 0, 0, 0, 0, 0, 0);
+        break;
+    }
+    case 6: /* frequency, then ten amplitudes */
+        memcpy(strengths, d + 1, 10);
+        pack_strengths(out, 0x26, strengths, d[0]);
+        break;
     default:
-        out[0] = 0x05; break;
+        out[0] = 0x05;
+        break;
     }
 }
 
@@ -72,9 +132,8 @@ static int live_locked(void) { return motors_on() || triggers_on(); }
 
 static void fill_state(uint8_t state[47]) {
     memset(state, 0, 47);
-    /* Bit 0x02 selects classic rumble and turns the audio haptic channel off.
-     * Set it only while a motor is actually running, and always apply the
-     * trigger blocks so an "off" command is what releases the trigger. */
+    /* 0x01|0x02 drive the grip motors. 0x04 and 0x08 drive the trigger
+     * motors, and only the packed effect bytes belong there. */
     if (motors_on()) state[0] |= 0x01 | 0x02;
     state[0] |= 0x04 | 0x08;
     state[2] = g_right;
