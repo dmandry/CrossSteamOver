@@ -1,17 +1,22 @@
 /* Write DualSense rumble and adaptive-trigger reports over IOHID.
  * Steam's own output path waits until it has switched the pad back from the
- * desktop configuration, which is several seconds. This write does not. */
+ * desktop configuration, which is several seconds. This write does not.
+ * A Bluetooth report without the 0x10 tag is ignored, and a report that sets
+ * the "classic rumble" select bit also switches off the audio haptic channel.
+ * Repeating that bit cleared vibrations Steam had not played yet. */
 #include "dualsense_out.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_DEV 4
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_wake = PTHREAD_COND_INITIALIZER;
 static pthread_t g_thread;
 static int g_started;
 static IOHIDDeviceRef g_dev[MAX_DEV];
@@ -61,11 +66,17 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
     }
 }
 
+static int motors_on(void) { return g_left || g_right; }
+static int triggers_on(void) { return !is_off(g_lfx) || !is_off(g_rfx); }
+static int live_locked(void) { return motors_on() || triggers_on(); }
+
 static void fill_state(uint8_t state[47]) {
     memset(state, 0, 47);
-    state[0] = 0x01 | 0x02; /* compatible rumble + haptic motors */
-    if (!is_off(g_rfx)) state[0] |= 0x04;
-    if (!is_off(g_lfx)) state[0] |= 0x08;
+    /* Bit 0x02 selects classic rumble and turns the audio haptic channel off.
+     * Set it only while a motor is actually running, and always apply the
+     * trigger blocks so an "off" command is what releases the trigger. */
+    if (motors_on()) state[0] |= 0x01 | 0x02;
+    state[0] |= 0x04 | 0x08;
     state[2] = g_right;
     state[3] = g_left;
     memcpy(state + 10, g_rfx, 11);
@@ -81,9 +92,7 @@ static void note_report(int bt, IOReturn status) {
     fprintf(f, "dualsense output %s status %#x\n", bt ? "bluetooth" : "usb", status);
     fclose(f);
 }
-static void send_one(IOHIDDeviceRef dev, int bt) {
-    uint8_t state[47];
-    fill_state(state);
+static void send_one(IOHIDDeviceRef dev, int bt, const uint8_t state[47]) {
     if (!bt) {
         uint8_t pkt[48];
         pkt[0] = 0x02;
@@ -97,8 +106,12 @@ static void send_one(IOHIDDeviceRef dev, int bt) {
     uint8_t pkt[78];
     memset(pkt, 0, sizeof pkt);
     pkt[0] = 0x31;
-    pkt[1] = (uint8_t)((g_seq++ & 0x0f) << 4);
-    memcpy(pkt + 2, state, 47);
+    /* High nibble is a sequence the pad drops duplicates of. Byte 2 has to
+     * be 0x10 or the controller ignores the report. The 47-byte state follows. */
+    pkt[1] = (uint8_t)((g_seq & 0x0f) << 4);
+    pkt[2] = 0x10;
+    g_seq = (uint8_t)((g_seq + 1) & 0x0f);
+    memcpy(pkt + 3, state, 47);
     uint8_t prefix = 0xA2;
     uint32_t crc = crc32_step(0, &prefix, 1);
     crc = crc32_step(crc, pkt, 74);
@@ -112,9 +125,9 @@ static void send_one(IOHIDDeviceRef dev, int bt) {
     note_report(1, st);
 }
 
-static void send_all(void) {
+static void send_all(const uint8_t state[47]) {
     for (int i = 0; i < g_dev_n; i++)
-        if (g_dev[i]) send_one(g_dev[i], g_bt[i]);
+        if (g_dev[i]) send_one(g_dev[i], g_bt[i], state);
 }
 
 static int transport_is_bt(IOHIDDeviceRef dev) {
@@ -159,23 +172,47 @@ static void open_devices(void) {
         /* The manager has to stay alive for the devices to keep working. */
         (void)mgr;
     }
+    FILE *f = fopen("/tmp/steambridge.log", "a");
+    if (f) {
+        fprintf(f, "dualsense devices %d%s\n", g_dev_n, g_dev_n && g_bt[0] ? " bluetooth" : "");
+        fclose(f);
+    }
+}
+
+static void add_ms(struct timespec *ts, int ms) {
+    ts->tv_nsec += (long)ms * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) {
+        ts->tv_sec += ts->tv_nsec / 1000000000L;
+        ts->tv_nsec %= 1000000000L;
+    }
 }
 
 static void *writer(void *unused) {
     (void)unused;
     open_devices();
     for (;;) {
-        usleep(16000);
         pthread_mutex_lock(&g_lock);
-        int dirty = g_dirty;
-        int live = g_left || g_right || !is_off(g_lfx) || !is_off(g_rfx);
-        if (dirty || live) {
-            g_dirty = 0;
-            pthread_mutex_unlock(&g_lock);
-            send_all();
-        } else {
-            pthread_mutex_unlock(&g_lock);
+        if (!g_dirty) {
+            if (live_locked()) {
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                add_ms(&ts, 16);
+                pthread_cond_timedwait(&g_wake, &g_lock, &ts);
+            } else {
+                pthread_cond_wait(&g_wake, &g_lock);
+            }
         }
+        if (!g_dirty && !live_locked()) {
+            pthread_mutex_unlock(&g_lock);
+            continue;
+        }
+        uint8_t state[47];
+        fill_state(state);
+        g_dirty = 0;
+        pthread_mutex_unlock(&g_lock);
+        /* Send this update now. Waiting a full period first dropped any
+         * effect the game had already replaced with the next one. */
+        send_all(state);
     }
     return NULL;
 }
@@ -195,6 +232,7 @@ void dualsense_rumble(uint16_t left, uint16_t right) {
     g_left = (uint8_t)(left >> 8);
     g_right = (uint8_t)(right >> 8);
     g_dirty = 1;
+    pthread_cond_signal(&g_wake);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -207,6 +245,7 @@ void dualsense_triggers(const void *param, unsigned size) {
     if (mask & 0x01) encode_trigger(p + 8, g_lfx);
     if (mask & 0x02) encode_trigger(p + 8 + 56, g_rfx);
     g_dirty = 1;
+    pthread_cond_signal(&g_wake);
     pthread_mutex_unlock(&g_lock);
 }
 
