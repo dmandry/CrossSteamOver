@@ -434,6 +434,11 @@ static u64 call_method(proxy *p, int k, u64 *a) {
     } else if (kind == RET_INPUT_MOTION) {
         r = fn(args[0], (u64)(uintptr_t)p->mac, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
         if (!r) r = args[0];
+    } else if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31 || k == 47)) {
+        /* These go straight to the pad. Also handing them to Steam makes it
+         * play its own copy a few seconds later, and the trigger motor cracks
+         * as the two programs take turns. */
+        r = 0;
     } else r = fn((u64)(uintptr_t)p->mac, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
     char ver[64];
     const char *name = NULL;
@@ -442,17 +447,15 @@ static u64 call_method(proxy *p, int k, u64 *a) {
     if (name && r) r = (u64)(uintptr_t)wrap((void *)(uintptr_t)r, name);
     if (first && !strncmp(p->name, "SteamInput00", 12) && k == 6)
         log_line("%s connected controllers %llu", p->name, (unsigned long long)r);
-    /* Rumble and adaptive triggers are only written to the pad from RunFrame. The game
-     * reads buttons from the controller cache, which stays fresh, but it can go seconds
-     * between RunFrame calls. Flush now so the effect is not sitting in that queue. */
     if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31))
         dualsense_rumble((uint16_t)args[1], (uint16_t)args[2]);
     if (!strncmp(p->name, "SteamInput00", 12) && k == 47 && args[1] >= 0x10000)
         dualsense_triggers((const void *)(uintptr_t)args[1], 120);
-    if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31 || k == 32 || k == 47)) {
+    /* Simple haptic pulses still belong to Steam. Rumble and trigger effects do not. */
+    if (!strncmp(p->name, "SteamInput00", 12) && k == 32) {
         sysv_fn run = (sysv_fn)mvt[3];
         if (run) run((u64)(uintptr_t)p->mac, 1, 0, 0, 0, 0, 0, 0, 0, 0);
-        if (first) log_line("%s method %d (haptic/trigger), flushed", p->name, k);
+        if (first) log_line("%s method %d (haptic), flushed", p->name, k);
     }
     if (g_trace && first) log_line("%s method %d = %#llx", p->name, k, (unsigned long long)r);
     return r;

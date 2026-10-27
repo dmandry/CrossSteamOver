@@ -10,7 +10,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #define MAX_DEV 4
@@ -35,10 +34,6 @@ static uint32_t crc32_step(uint32_t crc, const uint8_t *p, size_t n) {
             crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1));
     }
     return ~crc;
-}
-
-static int is_off(const uint8_t fx[11]) {
-    return fx[0] == 0 || fx[0] == 0x05;
 }
 
 /* The 11-byte trigger block packs ten zones into bitfields. Writing the
@@ -127,8 +122,6 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
 }
 
 static int motors_on(void) { return g_left || g_right; }
-static int triggers_on(void) { return !is_off(g_lfx) || !is_off(g_rfx); }
-static int live_locked(void) { return motors_on() || triggers_on(); }
 
 static void fill_state(uint8_t state[47]) {
     memset(state, 0, 47);
@@ -238,39 +231,19 @@ static void open_devices(void) {
     }
 }
 
-static void add_ms(struct timespec *ts, int ms) {
-    ts->tv_nsec += (long)ms * 1000000L;
-    if (ts->tv_nsec >= 1000000000L) {
-        ts->tv_sec += ts->tv_nsec / 1000000000L;
-        ts->tv_nsec %= 1000000000L;
-    }
-}
-
 static void *writer(void *unused) {
     (void)unused;
     open_devices();
     for (;;) {
         pthread_mutex_lock(&g_lock);
-        if (!g_dirty) {
-            if (live_locked()) {
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                add_ms(&ts, 16);
-                pthread_cond_timedwait(&g_wake, &g_lock, &ts);
-            } else {
-                pthread_cond_wait(&g_wake, &g_lock);
-            }
-        }
-        if (!g_dirty && !live_locked()) {
-            pthread_mutex_unlock(&g_lock);
-            continue;
-        }
+        while (!g_dirty)
+            pthread_cond_wait(&g_wake, &g_lock);
         uint8_t state[47];
         fill_state(state);
         g_dirty = 0;
         pthread_mutex_unlock(&g_lock);
-        /* Send this update now. Waiting a full period first dropped any
-         * effect the game had already replaced with the next one. */
+        /* One report per change. Repeating the same effect restarts the
+         * trigger motor and it ticks, which is the cracking sound. */
         send_all(state);
     }
     return NULL;
@@ -286,12 +259,15 @@ static void ensure_thread(void) {
 }
 
 void dualsense_rumble(uint16_t left, uint16_t right) {
+    uint8_t nl = (uint8_t)(left >> 8), nr = (uint8_t)(right >> 8);
     ensure_thread();
     pthread_mutex_lock(&g_lock);
-    g_left = (uint8_t)(left >> 8);
-    g_right = (uint8_t)(right >> 8);
-    g_dirty = 1;
-    pthread_cond_signal(&g_wake);
+    if (nl != g_left || nr != g_right) {
+        g_left = nl;
+        g_right = nr;
+        g_dirty = 1;
+        pthread_cond_signal(&g_wake);
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -300,11 +276,18 @@ void dualsense_triggers(const void *param, unsigned size) {
     ensure_thread();
     const uint8_t *p = param;
     uint8_t mask = p[0];
+    uint8_t lfx[11], rfx[11];
     pthread_mutex_lock(&g_lock);
-    if (mask & 0x01) encode_trigger(p + 8, g_lfx);
-    if (mask & 0x02) encode_trigger(p + 8 + 56, g_rfx);
-    g_dirty = 1;
-    pthread_cond_signal(&g_wake);
+    memcpy(lfx, g_lfx, 11);
+    memcpy(rfx, g_rfx, 11);
+    if (mask & 0x01) encode_trigger(p + 8, lfx);
+    if (mask & 0x02) encode_trigger(p + 8 + 56, rfx);
+    if (memcmp(lfx, g_lfx, 11) != 0 || memcmp(rfx, g_rfx, 11) != 0) {
+        memcpy(g_lfx, lfx, 11);
+        memcpy(g_rfx, rfx, 11);
+        g_dirty = 1;
+        pthread_cond_signal(&g_wake);
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
