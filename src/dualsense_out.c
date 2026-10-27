@@ -36,14 +36,17 @@ static uint32_t crc32_step(uint32_t crc, const uint8_t *p, size_t n) {
     return ~crc;
 }
 
-/* Steam's encoder (steamclient, arm64 0x7bb564) writes the mode at byte 1 of
- * each 11-byte block. Byte 0 stays 0. Zones follow at bytes 2-3, then six
- * bytes of 3-bit strengths, and a vibration frequency at byte 10. */
+/* Steam builds an intermediate block with the mode at index 1, then copies it
+ * into a USB report whose first byte is the report id 0x02. On the pad the
+ * mode is therefore byte 0 of the 11-byte trigger field (state offsets 10 and
+ * 21). Zones are bytes 1-2, six strength bytes follow, frequency is byte 9.
+ * Flag bit 0x02 in state byte 0 selects classic rumble and must not be set
+ * for a trigger-only update, or the grips vibrate continuously. */
 static uint8_t clamp8(uint8_t v, uint8_t max) { return v > max ? max : v; }
 
 static void trigger_off(uint8_t out[11]) {
     memset(out, 0, 11);
-    out[1] = 0x05;
+    out[0] = 0x05;
 }
 
 static void pack_strengths(uint8_t out[11], uint8_t mode, const uint8_t strength[10], uint8_t frequency) {
@@ -57,11 +60,11 @@ static void pack_strengths(uint8_t out[11], uint8_t mode, const uint8_t strength
         active |= (uint16_t)1 << i;
     }
     memset(out, 0, 11);
-    out[1] = active ? mode : 0x05;
-    out[2] = (uint8_t)active;
-    out[3] = (uint8_t)(active >> 8);
-    for (int i = 0; i < 6; i++) out[4 + i] = (uint8_t)(packed >> (8 * i));
-    out[10] = frequency;
+    out[0] = active ? mode : 0x05;
+    out[1] = (uint8_t)active;
+    out[2] = (uint8_t)(active >> 8);
+    for (int i = 0; i < 6; i++) out[3 + i] = (uint8_t)(packed >> (8 * i));
+    out[9] = frequency;
 }
 
 static void effect_from_here(uint8_t out[11], uint8_t mode, uint8_t position, uint8_t strength, uint8_t frequency) {
@@ -88,14 +91,14 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
     case 1: /* feedback: position, strength. Resistance from there to the end. */
         effect_from_here(out, 0x21, d[0], d[1], 0);
         break;
-    case 2: { /* weapon: start, end, strength. Mode at byte 1, zones at 2, strength at 4. */
+    case 2: { /* weapon: start, end, strength */
         uint8_t start = clamp8(d[0], 9), end = clamp8(d[1], 9), strength = clamp8(d[2], 8);
         uint16_t zones = (uint16_t)((1u << start) | (1u << end));
         memset(out, 0, 11);
-        out[1] = 0x25;
-        out[2] = (uint8_t)zones;
-        out[3] = (uint8_t)(zones >> 8);
-        out[4] = strength ? (uint8_t)(strength - 1) : 0;
+        out[0] = 0x25;
+        out[1] = (uint8_t)zones;
+        out[2] = (uint8_t)(zones >> 8);
+        out[3] = strength ? (uint8_t)(strength - 1) : 0;
         break;
     }
     case 3: /* vibration: position, amplitude, frequency */
@@ -112,10 +115,10 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
         uint8_t low = a ? (uint8_t)(a - 1) : 0;
         uint8_t pair = (uint8_t)((((b << 3) + 0x38) & 0x38) | (low & 7));
         memset(out, 0, 11);
-        out[1] = 0x22;
-        out[2] = (uint8_t)zones;
-        out[3] = (uint8_t)(zones >> 8);
-        out[4] = pair;
+        out[0] = 0x22;
+        out[1] = (uint8_t)zones;
+        out[2] = (uint8_t)(zones >> 8);
+        out[3] = pair;
         break;
     }
     case 6: /* frequency, then ten amplitudes */
@@ -130,16 +133,16 @@ static void encode_trigger(const uint8_t *command, uint8_t out[11]) {
 
 static int motors_on(void) { return g_left || g_right; }
 
-static int trigger_programmed(const uint8_t fx[11]) { return fx[1] != 0; }
+static int trigger_programmed(const uint8_t fx[11]) { return fx[0] != 0; }
 
 static void fill_state(uint8_t state[47]) {
     memset(state, 0, 47);
-    /* Grip motors use byte 0. Trigger enables are byte 1: 0x04 right, 0x08 left.
-     * Steam also sets byte 0 to 0x02 whenever a trigger block is sent. */
+    /* Byte 0 bit 0x02 forces classic rumble. Only set it while a grip motor
+     * is actually running. Trigger motors are bits 0x04 (right) and 0x08 (left)
+     * in that same byte. */
     if (motors_on()) state[0] |= 0x01 | 0x02;
-    if (trigger_programmed(g_rfx)) state[1] |= 0x04;
-    if (trigger_programmed(g_lfx)) state[1] |= 0x08;
-    if (state[1] & 0x0c) state[0] |= 0x02;
+    if (trigger_programmed(g_rfx)) state[0] |= 0x04;
+    if (trigger_programmed(g_lfx)) state[0] |= 0x08;
     state[2] = g_right;
     state[3] = g_left;
     memcpy(state + 10, g_rfx, 11);
@@ -265,7 +268,7 @@ static void ensure_thread(void) {
     g_started = 1;
     memset(g_lfx, 0, sizeof g_lfx);
     memset(g_rfx, 0, sizeof g_rfx);
-    g_lfx[1] = g_rfx[1] = 0x05;
+    g_lfx[0] = g_rfx[0] = 0x05;
     pthread_create(&g_thread, NULL, writer, NULL);
 }
 
