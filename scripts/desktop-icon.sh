@@ -47,22 +47,37 @@ if [[ -z "$DEST" ]]; then
 fi
 [[ "$DEST" == *.app ]] || DEST="${DEST}.app"
 
-if [[ -e "$DEST" ]]; then
-    if [[ ! -f "$DEST/Contents/Resources/crosssteamover-launcher" ]]; then
-        echo "refusing to replace $DEST (it was not made by this script)" >&2
+final="$DEST"
+if [[ -e "$final" ]]; then
+    if [[ ! -f "$final/Contents/Resources/crosssteamover-launcher" ]]; then
+        echo "refusing to replace $final (it was not made by this script)" >&2
         exit 1
     fi
-    rm -rf "$DEST"
 fi
 
+# Build away from the Desktop, then move the finished app into place.
+# Finder caches a blank icon if it sees the bundle before the picture is in it.
+work="$(mktemp -d -t crosssteamover-app)"
+DEST="$work/App.app"
 mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources"
 : > "$DEST/Contents/Resources/crosssteamover-launcher"
 
 png="$(mktemp -t crosssteamover-icon).png"
 iconset_parent=""
+staging=""
+old=""
 cleanup_tmp() {
     rm -f "$png"
     [[ -n "$iconset_parent" ]] && rm -rf "$iconset_parent"
+    [[ -n "$work" ]] && rm -rf "$work"
+    [[ -n "$staging" && -e "$staging" ]] && rm -rf "$staging"
+    if [[ -n "$old" && -e "$old" ]]; then
+        if [[ ! -e "$final" ]]; then
+            mv "$old" "$final"
+        else
+            rm -rf "$old"
+        fi
+    fi
 }
 trap cleanup_tmp EXIT
 
@@ -76,7 +91,62 @@ else
     echo "no icon in $(basename "$EXE"); the Desktop app will use a generic icon" >&2
 fi
 
-if [[ "$got_icon" == 1 ]]; then
+# macOS 26 and later look up a compiled asset-catalog icon. An icns alone is
+# what Finder was using before, and without the catalog it draws a blank app.
+have_asset_catalog=0
+if [[ "$got_icon" == 1 ]] && xcrun --find actool >/dev/null 2>&1; then
+    icon_src="$(mktemp -d -t crosssteamover-icon-src)"
+    compiled="$(mktemp -d -t crosssteamover-actool)"
+    mkdir -p "$icon_src/AppIcon.icon/Assets"
+    sips -z 1024 1024 "$png" --out "$icon_src/AppIcon.icon/Assets/artwork.png" >/dev/null
+    cat > "$icon_src/AppIcon.icon/icon.json" << 'JSON'
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "hidden" : false,
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "glass" : false,
+          "image-name" : "artwork.png",
+          "name" : "artwork",
+          "opacity" : 1,
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [0, 0]
+          }
+        }
+      ],
+      "name" : "Artwork",
+      "shadow" : { "kind" : "none", "opacity" : 0 },
+      "specular" : false,
+      "translucency" : { "enabled" : false, "value" : 0 }
+    }
+  ],
+  "supported-platforms" : { "squares" : "shared" }
+}
+JSON
+    if xcrun actool "$icon_src/AppIcon.icon" \
+        --compile "$compiled" \
+        --app-icon AppIcon \
+        --include-all-app-icons \
+        --enable-on-demand-resources NO \
+        --development-region en \
+        --target-device mac \
+        --minimum-deployment-target 12.0 \
+        --platform macosx \
+        --output-partial-info-plist "$compiled/partial.plist" \
+        >/dev/null \
+        && [[ -f "$compiled/Assets.car" && -f "$compiled/AppIcon.icns" ]]; then
+        cp "$compiled/Assets.car" "$DEST/Contents/Resources/Assets.car"
+        cp "$compiled/AppIcon.icns" "$DEST/Contents/Resources/AppIcon.icns"
+        have_asset_catalog=1
+    fi
+    rm -rf "$icon_src" "$compiled"
+fi
+
+if [[ "$got_icon" == 1 && "$have_asset_catalog" != 1 ]]; then
     iconset_parent="$(mktemp -d -t crosssteamover-iconset)"
     iconset="$iconset_parent/AppIcon.iconset"
     mkdir -p "$iconset"
@@ -120,6 +190,9 @@ cat > "$DEST/Contents/Info.plist" << PLIST
 </dict>
 </plist>
 PLIST
+if [[ "$have_asset_catalog" == 1 ]]; then
+    /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$DEST/Contents/Info.plist" >/dev/null
+fi
 
 # macOS draws a prohibit sign on an app whose executable is a shell script.
 # The script lives in Resources; Contents/MacOS/launch is a real program that runs it.
@@ -149,17 +222,55 @@ open(path, "w").write(script)
 PY
 chmod +x "$DEST/Contents/Resources/run.sh"
 runner="$(mktemp -t crosssteamover-runner).c"
-cat > "$runner" << CSOURCE
-#include <unistd.h>
+cat > "$runner" << 'CSOURCE'
+#include <mach-o/dyld.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 int main(void) {
-    execl("/bin/bash", "bash", "$DEST/Contents/Resources/run.sh", (char *)0);
+    char path[4096];
+    uint32_t size = sizeof path;
+    char *slash;
+    if (_NSGetExecutablePath(path, &size) != 0)
+        return 1;
+    slash = strrchr(path, '/');
+    if (!slash)
+        return 1;
+    *slash = 0;
+    slash = strrchr(path, '/');
+    if (!slash)
+        return 1;
+    *slash = 0;
+    if (strlcat(path, "/Resources/run.sh", sizeof path) >= sizeof path)
+        return 1;
+    execl("/bin/bash", "bash", path, (char *)0);
     perror("CrossSteamOver");
     return 1;
 }
 CSOURCE
-clang -arch arm64 -arch x86_64 -O2 -o "$DEST/Contents/MacOS/launch" "$runner"
+clang -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 -O2 -o "$DEST/Contents/MacOS/launch" "$runner"
 rm -f "$runner"
 codesign --force --sign - "$DEST" >/dev/null
 xattr -cr "$DEST"
-echo "$DEST"
+
+parent="$(dirname "$final")"
+staging="$parent/.crosssteamover-staging.$$"
+old=""
+ditto "$DEST" "$staging"
+if [[ -e "$final" ]]; then
+    old="$parent/.crosssteamover-old.$$"
+    mv "$final" "$old"
+fi
+if ! mv "$staging" "$final"; then
+    [[ -n "$old" && ! -e "$final" ]] && mv "$old" "$final"
+    echo "could not install $final" >&2
+    exit 1
+fi
+staging=""
+[[ -n "$old" ]] && rm -rf "$old"
+osascript -e "tell application \"Finder\" to update POSIX file \"$final\"" >/dev/null 2>&1 || true
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$lsregister" ]]; then
+    "$lsregister" -f "$final" >/dev/null 2>&1 || true
+fi
+echo "$final"

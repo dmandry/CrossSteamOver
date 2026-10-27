@@ -175,8 +175,11 @@ overwrite a different app of the same name.
 
 The app's program is a real Mac executable, not a shell script, and it is
 signed for local use. A shell script in that spot makes macOS draw a prohibit
-sign on the icon. Rebuild the icon with this script if an older one still
-shows that sign.
+sign on the icon. On macOS 26 and later the script also compiles the picture
+into the asset catalog Finder actually displays. That step uses `actool` from
+Xcode. Without it, the app still gets an `icns`, which current macOS can leave
+as a blank icon. Rebuild the icon with this script if an older one still shows
+a prohibit sign or a blank picture.
 
 The first time macOS asks, choose Open. The icon stays in the Dock while the
 game is running and leaves when the game exits.
