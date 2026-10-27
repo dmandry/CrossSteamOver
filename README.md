@@ -44,6 +44,10 @@ The stub is marked `Wine builtin DLL` and is linked at image base `0x1A0000000`.
 That address matters: a lot of game DLLs prefer `0x180000000`, and this stub has no
 relocation table, so it has to land somewhere those DLLs are not.
 
+Tagged versions (`v*`) are built by GitHub Actions on a Mac runner. The release
+page has `steamclient64.dll` and `steamclient64.so`. To install that pair, check
+out the same tag, put both files in `build/`, and run `scripts/install.sh`.
+
 ## Install into a bottle
 
 Create a win64 bottle in CrossOver first (any name). Windows Steam does not have to

@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  libs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosssteamover-${{ github.ref_name }}
+          path: |
+            build/steamclient64.dll
+            build/steamclient64.so
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" << 'EOF'
+          Prebuilt bridge libraries for this tag.
+
+          - `steamclient64.dll` is the Windows stub CrossOver loads instead of Valve's client library.
+          - `steamclient64.so` is the x86_64 Mac side. It forwards calls into Mac Steam's `steamclient.dylib`.
+
+          Both were built on a macOS runner with `make`. To install them, check out this tag, put the two files in `build/`, and run `scripts/install.sh`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            build/steamclient64.dll \
+            build/steamclient64.so \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"
