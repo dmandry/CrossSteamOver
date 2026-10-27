@@ -121,7 +121,9 @@ cat > "$DEST/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
-python3 - "$DEST/Contents/MacOS/launch" "$ROOT/scripts/launch.sh" "$BOTTLE" "$EXE" "$APP_ID" "$NAME" << 'PY'
+# macOS draws a prohibit sign on an app whose executable is a shell script.
+# The script lives in Resources; Contents/MacOS/launch is a real program that runs it.
+python3 - "$DEST/Contents/Resources/run.sh" "$ROOT/scripts/launch.sh" "$BOTTLE" "$EXE" "$APP_ID" "$NAME" << 'PY'
 import shlex
 import sys
 path, launch, bottle, exe, appid, name = sys.argv[1:]
@@ -145,5 +147,19 @@ rm -f "$err"
 )
 open(path, "w").write(script)
 PY
-chmod +x "$DEST/Contents/MacOS/launch"
+chmod +x "$DEST/Contents/Resources/run.sh"
+runner="$(mktemp -t crosssteamover-runner).c"
+cat > "$runner" << CSOURCE
+#include <unistd.h>
+#include <stdio.h>
+int main(void) {
+    execl("/bin/bash", "bash", "$DEST/Contents/Resources/run.sh", (char *)0);
+    perror("CrossSteamOver");
+    return 1;
+}
+CSOURCE
+clang -arch arm64 -arch x86_64 -O2 -o "$DEST/Contents/MacOS/launch" "$runner"
+rm -f "$runner"
+codesign --force --sign - "$DEST" >/dev/null
+xattr -cr "$DEST"
 echo "$DEST"

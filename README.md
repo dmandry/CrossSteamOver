@@ -173,6 +173,11 @@ place, and `--icon some.png` uses that picture instead of the one in the exe.
 Running the command again replaces an app this script created. It will not
 overwrite a different app of the same name.
 
+The app's program is a real Mac executable, not a shell script, and it is
+signed for local use. A shell script in that spot makes macOS draw a prohibit
+sign on the icon. Rebuild the icon with this script if an older one still
+shows that sign.
+
 The first time macOS asks, choose Open. The icon stays in the Dock while the
 game is running and leaves when the game exits.
 
