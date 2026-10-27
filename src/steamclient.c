@@ -451,11 +451,13 @@ static u64 call_method(proxy *p, int k, u64 *a) {
         dualsense_rumble((uint16_t)args[1], (uint16_t)args[2]);
     if (!strncmp(p->name, "SteamInput00", 12) && k == 47 && args[1] >= 0x10000)
         dualsense_triggers((const void *)(uintptr_t)args[1], 120);
-    /* Simple haptic pulses still belong to Steam. Rumble and trigger effects do not. */
-    if (!strncmp(p->name, "SteamInput00", 12) && k == 32) {
+    /* The game calls rumble every frame and does not call RunFrame itself.
+     * RunFrame is what publishes button state. The rumble and trigger calls
+     * above are not forwarded, so this flush does not play a second effect. */
+    if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31 || k == 32 || k == 47)) {
         sysv_fn run = (sysv_fn)mvt[3];
         if (run) run((u64)(uintptr_t)p->mac, 1, 0, 0, 0, 0, 0, 0, 0, 0);
-        if (first) log_line("%s method %d (haptic), flushed", p->name, k);
+        if (first) log_line("%s method %d, input flushed", p->name, k);
     }
     if (g_trace && first) log_line("%s method %d = %#llx", p->name, k, (unsigned long long)r);
     return r;
