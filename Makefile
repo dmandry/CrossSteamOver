@@ -13,8 +13,8 @@ all: $(BUILD)/steamclient64.so $(BUILD)/steamclient64.dll
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/steamclient64.so: $(SRC)/steamclient.c $(SRC)/stubs.inc | $(BUILD)
-	$(CC) $(CFLAGS_UNIX) -I$(SRC) -o $@ $(SRC)/steamclient.c
+$(BUILD)/steamclient64.so: $(SRC)/steamclient.c $(SRC)/dualsense_out.c $(SRC)/dualsense_out.h $(SRC)/stubs.inc | $(BUILD)
+	$(CC) $(CFLAGS_UNIX) -I$(SRC) -framework IOKit -framework CoreFoundation -o $@ $(SRC)/steamclient.c $(SRC)/dualsense_out.c
 
 $(BUILD)/pe_bridge.o: $(SRC)/pe_bridge.c | $(BUILD)
 	$(CC) $(CFLAGS_PE) -o $@ $(SRC)/pe_bridge.c

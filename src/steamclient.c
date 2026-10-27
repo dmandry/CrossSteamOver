@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "dualsense_out.h"
 
 #define WINAPI __attribute__((ms_abi))
 typedef uint64_t u64;
@@ -444,6 +445,10 @@ static u64 call_method(proxy *p, int k, u64 *a) {
     /* Rumble and adaptive triggers are only written to the pad from RunFrame. The game
      * reads buttons from the controller cache, which stays fresh, but it can go seconds
      * between RunFrame calls. Flush now so the effect is not sitting in that queue. */
+    if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31))
+        dualsense_rumble((uint16_t)args[1], (uint16_t)args[2]);
+    if (!strncmp(p->name, "SteamInput00", 12) && k == 47 && args[1] >= 0x10000)
+        dualsense_triggers((const void *)(uintptr_t)args[1], 120);
     if (!strncmp(p->name, "SteamInput00", 12) && (k == 30 || k == 31 || k == 32 || k == 47)) {
         sysv_fn run = (sysv_fn)mvt[3];
         if (run) run((u64)(uintptr_t)p->mac, 1, 0, 0, 0, 0, 0, 0, 0, 0);
