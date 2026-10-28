@@ -92,6 +92,19 @@ Download a Windows app straight into the bottle. `3280350` is Death Stranding 2;
 the app id of the game you own. `@sSteamCmdForcePlatformType` has to come before
 `login`.
 
+### App id from SteamDB
+
+The app id is the number Steam uses for that game. Packages and depots on the
+same page are different numbers. `steamcmd` and `scripts/launch.sh` want the app id.
+
+1. Open [SteamDB](https://steamdb.info/) and search for the game.
+2. Open the result whose URL is `https://steamdb.info/app/<number>/`. Skip rows
+   labeled package or depot.
+3. Use that `<number>`. It is also shown on the page as **App ID**, and it matches
+   the number in the Steam store URL `https://store.steampowered.com/app/<number>/`.
+
+Death Stranding 2 is [app 3280350](https://steamdb.info/app/3280350/).
+
 ```bash
 BOTTLE="$HOME/Library/Application Support/CrossOver/Bottles/MyBottle"
 INSTALL="$BOTTLE/drive_c/Games/3280350"
