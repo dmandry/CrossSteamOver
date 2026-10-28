@@ -46,7 +46,19 @@ export SteamGameId="$APP_ID"
 LOG="${CROSSSTEAM_LOG:-/tmp/crosssteamover.log}"
 rm -f /tmp/steambridge.log
 
-"$WINE" --bottle "$BOTTLE" --dll steamclient64=b rundll32.exe steamclient64.dll,SteamBridgeWait >/tmp/crosssteamover-holder.log 2>&1 &
+# The bottle's cxbottle.conf is applied before --env. Leave the Metal HUD off
+# unless CROSSSTEAM_HUD=1. The desktop icon uses this script, so it stays off too.
+cx_wine() {
+    if [[ -z "${CROSSSTEAM_HUD:-}" ]]; then
+        "$WINE" --bottle "$BOTTLE" \
+            --env "MTL_HUD_ENABLED=0 MTL_HUD_LOG_ENABLED=0 D3DM_SHOW_HUD_STATS=0" \
+            "$@"
+    else
+        "$WINE" --bottle "$BOTTLE" "$@"
+    fi
+}
+
+cx_wine --dll steamclient64=b rundll32.exe steamclient64.dll,SteamBridgeWait >/tmp/crosssteamover-holder.log 2>&1 &
 HOLDER=$!
 PID=""
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -64,12 +76,12 @@ if [[ -z "$PID" || "$PID" == 0 ]]; then
     exit 1
 fi
 
-"$WINE" --bottle "$BOTTLE" reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v pid /t REG_DWORD /d "$PID" /f >/dev/null
-"$WINE" --bottle "$BOTTLE" reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v ActiveUser /t REG_DWORD /d 1 /f >/dev/null
-"$WINE" --bottle "$BOTTLE" reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v SteamClientDll64 /t REG_SZ /d "C:\\windows\\system32\\steamclient64.dll" /f >/dev/null
+cx_wine reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v pid /t REG_DWORD /d "$PID" /f >/dev/null
+cx_wine reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v ActiveUser /t REG_DWORD /d 1 /f >/dev/null
+cx_wine reg add "HKCU\\Software\\Valve\\Steam\\ActiveProcess" /v SteamClientDll64 /t REG_SZ /d "C:\\windows\\system32\\steamclient64.dll" /f >/dev/null
 
 cleanup() {
-    "$WINE" --bottle "$BOTTLE" taskkill /IM rundll32.exe /F >/dev/null 2>&1 || true
+    cx_wine taskkill /IM rundll32.exe /F >/dev/null 2>&1 || true
     kill "$HOLDER" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -80,8 +92,8 @@ echo "Starting $(basename "$EXE") (Steam app $APP_ID). Bridge log: /tmp/steambri
 set +e
 # macOS bash 3.2 treats "${array[@]}" as unbound when the array is empty and set -u is on.
 if [[ -n "${CROSSSTEAM_DEBUG:-}" ]]; then
-    "$WINE" --bottle "$BOTTLE" --dll steamclient64=b --debugmsg err+all,seh "$EXE" >"$LOG" 2>&1
+    cx_wine --dll steamclient64=b --debugmsg err+all,seh "$EXE" >"$LOG" 2>&1
 else
-    "$WINE" --bottle "$BOTTLE" --dll steamclient64=b "$EXE" >"$LOG" 2>&1
+    cx_wine --dll steamclient64=b "$EXE" >"$LOG" 2>&1
 fi
 echo "$(basename "$EXE") exited $?"

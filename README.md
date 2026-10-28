@@ -127,7 +127,10 @@ If the exe exits immediately because `vcruntime140.dll` or `msvcp140.dll` is mis
 install the Visual C++ 2015–2022 x64 redistributable into the same bottle from
 CrossOver. Graphics settings already stored in the bottle (`CX_GRAPHICS_BACKEND`,
 `D3DM_ENABLE_METALFX`, and the rest in `cxbottle.conf`) are picked up by CrossOver's
-`wine` wrapper. This project does not change them.
+`wine` wrapper. The launcher turns the Metal HUD off (`MTL_HUD_ENABLED`,
+`MTL_HUD_LOG_ENABLED`, and `D3DM_SHOW_HUD_STATS`) even when the bottle sets them.
+`CROSSSTEAM_HUD=1` keeps the bottle's HUD settings. The desktop icon runs this
+same launcher, so the HUD stays off there too.
 
 ## Launch
 
@@ -174,8 +177,9 @@ non-null pointer.
 `scripts/desktop-icon.sh` builds a double-clickable Mac app and puts it on the
 Desktop. The picture is the icon stored in the exe. Double-clicking runs
 `scripts/launch.sh` with the bottle, exe, and app id saved into the app, so the
-icon keeps working if you move it. Mac Steam still has to be open. If the start
-fails, a dialog shows the last lines of the error.
+icon keeps working if you move it. That includes leaving the Metal HUD off.
+Mac Steam still has to be open. If the start fails, a dialog shows the last
+lines of the error.
 
 ```bash
 scripts/desktop-icon.sh \
